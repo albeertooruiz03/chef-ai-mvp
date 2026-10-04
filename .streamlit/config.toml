@@ -1,0 +1,5 @@
+[theme]
+base="dark"
+primaryColor="#4CAF50" # El verde de tus botones
+backgroundColor="#1E2329" # El fondo oscuro del dashboard
+secondaryBackgroundColor="#293038" # El fondo de las tarjetas

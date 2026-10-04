@@ -16,14 +16,20 @@ st.set_page_config(
 def check_password():
     """Devuelve True si el usuario ha introducido la contraseña correcta."""
     def password_entered():
-        usuario = st.session_state["usuario_input"]
-        password = st.session_state["password_input"]
+        # Usar .get() evita el KeyError si la memoria se ha limpiado
+        usuario = st.session_state.get("usuario_input", "")
+        password = st.session_state.get("password_input", "")
         
         # Comprueba si el usuario existe en los secretos y la contraseña coincide
         if usuario in st.secrets.get("passwords", {}) and password == st.secrets["passwords"][usuario]:
             st.session_state["autenticado"] = True
             st.session_state["usuario_actual"] = usuario
-            del st.session_state["password_input"]  # Por seguridad, borramos la contraseña de la memoria
+            
+            # Limpiamos las casillas por seguridad comprobando primero si existen
+            if "password_input" in st.session_state:
+                del st.session_state["password_input"]
+            if "usuario_input" in st.session_state:
+                del st.session_state["usuario_input"]
         else:
             st.session_state["autenticado"] = False
 

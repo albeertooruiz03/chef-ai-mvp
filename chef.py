@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
-import os
 import numpy as np
 import matplotlib.pyplot as plt
 from prophet import Prophet
+# Importamos la conexión oficial de Streamlit a Google Sheets
+from streamlit_gsheets import GSheetsConnection
 
 # === CONFIGURACIÓN DE LA PÁGINA ===
 st.set_page_config(
@@ -12,48 +13,55 @@ st.set_page_config(
     layout="wide"
 )
 
-# === NOMBRES DE ARCHIVOS ===
-FILE_VENTAS = "ventas_restaurante_agosto.csv"
-FILE_RENTABILIDAD = "rentabilidad_platos.xlsx"
-FILE_BIBLIOTECA = "biblioteca_ingredientes.xlsx"
+# === URL DE TU GOOGLE SHEET (¡Cámbiala por la tuya!) ===
+SHEET_URL = "https://docs.google.com/spreadsheets/d/TU_ID_DE_GOOGLE_SHEETS_AQUI/edit"
 
-# === FUNCIÓN PARA CARGAR DATOS DE VENTAS (CSV) (NUEVA) ===
-@st.cache_data # Podemos cachear este, ya que no se modifica
-def load_sales_data(file_name):
-    """Carga y procesa el archivo CSV de ventas."""
-    if not os.path.exists(file_name):
-        st.error(f"No se encontró el archivo principal '{file_name}'.")
-        st.info("Asegúrate de tener el archivo 'ventas_restaurante_agosto.csv' en la misma carpeta.")
-        return pd.DataFrame()
+# Crear la conexión global a Google Sheets
+# Se conecta usando los "Secrets" que configuraste en Streamlit Cloud
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+
+# === NUEVAS FUNCIONES PARA CARGAR DATOS DESDE GOOGLE SHEETS ===
+
+@st.cache_data(ttl=600) # Cachea los datos por 10 minutos para no saturar a Google
+def load_sheet_data(worksheet_name):
+    """Carga una pestaña específica del Google Sheet y devuelve un DataFrame"""
     try:
-        df = pd.read_csv(file_name)
-        # Limpia cualquier texto erróneo antes de convertir a fecha
-        df['Fecha'] = df['Fecha'].str.split(' ').str[0]
-        df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
-        # Elimina filas donde la fecha no se pudo parsear
-        df = df.dropna(subset=['Fecha']) 
+        df = conn.read(spreadsheet=SHEET_URL, worksheet=worksheet_name)
+        # Limpiar filas completamente vacías
+        df = df.dropna(how='all')
         return df
     except Exception as e:
-        st.error(f"Error al leer {file_name}: {e}")
+        st.error(f"Error al conectar con la pestaña '{worksheet_name}': {e}")
         return pd.DataFrame()
 
-# === FUNCIÓN PARA CARGAR DATOS (EXCEL) (CORREGIDA) ===
-def load_data(file_name):
-    """Carga un archivo Excel. Si no existe, devuelve un DataFrame vacío."""
-    if os.path.exists(file_name):
-        try:
-            df = pd.read_excel(file_name)
-            return df
-        except Exception as e:
-            st.error(f"Error al leer {file_name}: {e}")
-            return pd.DataFrame()
-    return pd.DataFrame()
+def save_to_sheet(df, worksheet_name):
+    """Sobreescribe una pestaña específica del Google Sheet con el DataFrame nuevo"""
+    try:
+        # Primero leemos para asegurarnos de que no perdemos estructura, luego limpiamos y guardamos
+        conn.update(worksheet=worksheet_name, data=df, spreadsheet=SHEET_URL)
+        # Limpiamos el caché para que la app lea los datos frescos en el próximo click
+        st.cache_data.clear() 
+        return True
+    except Exception as e:
+        st.error(f"Error al guardar en la pestaña '{worksheet_name}': {e}")
+        return False
 
-# Cargar datos principales de ventas
-df_ventas = load_sales_data(FILE_VENTAS) # <-- USA LA NUEVA FUNCIÓN
+# === CARGAR DATOS PRINCIPALES ===
+# Cargamos desde las pestañas (asegúrate de que los nombres coinciden en tu Google Sheet)
+df_ventas = load_sheet_data("Ventas")
+df_rentabilidad = load_sheet_data("Rentabilidad")
+df_biblioteca = load_sheet_data("Biblioteca")
+
+# Preprocesamiento de Ventas (si hay datos)
+if not df_ventas.empty and 'Fecha' in df_ventas.columns:
+    df_ventas['Fecha'] = pd.to_datetime(df_ventas['Fecha'], errors='coerce')
+    df_ventas = df_ventas.dropna(subset=['Fecha'])
 
 if df_ventas.empty:
-    st.stop() # El error ya se muestra dentro de la función load_sales_data
+    st.warning("⚠️ No hay datos en la pestaña 'Ventas' de Google Sheets. Añade algunos datos para poder ver el dashboard.")
+    st.stop()
+
 
 # === MENÚ LATERAL ===
 st.sidebar.title("🍴 Chef.AI Panel")
@@ -74,7 +82,6 @@ if opcion == "📊 Métricas Generales":
     total_ventas = df_ventas["Total Venta (€)"].sum()
     total_platos = df_ventas["Cantidad"].sum()
     platos_mas_vendidos = df_ventas.groupby("Producto")["Cantidad"].sum().sort_values(ascending=False).head(5)
-    # Agrupar por fecha (día)
     ventas_por_dia = df_ventas.groupby(df_ventas['Fecha'].dt.date)["Total Venta (€)"].sum()
 
     col1, col2 = st.columns(2)
@@ -87,19 +94,17 @@ if opcion == "📊 Métricas Generales":
     st.subheader("📆 Evolución de Ventas por Día")
     st.line_chart(ventas_por_dia)
 
-    # === BLOQUE: Mostrar rentabilidad (del archivo guardado) ===
     st.markdown("---")
     st.subheader("💰 Resumen de Rentabilidad por Plato")
 
-    df_rent = load_data(FILE_RENTABILIDAD) # <-- Usa la función simple de Excel
+    # Usamos el dataframe que ya cargamos desde Google Sheets al principio
+    df_rent = df_rentabilidad
 
     if not df_rent.empty:
-        # Asegurarse de que las columnas esperadas existen
         columnas_rent = ["Plato", "Costo Ingredientes (€)", "Precio Venta Medio (€)", "Beneficio (€)", "Margen (%)"]
         if all(col in df_rent.columns for col in columnas_rent):
             st.dataframe(df_rent[columnas_rent], use_container_width=True)
 
-            # Métricas globales de rentabilidad
             mapa_cantidad = df_ventas.groupby("Producto")["Cantidad"].sum()
             df_rent_con_cantidad = df_rent.join(mapa_cantidad, on="Plato", how="left").fillna(0)
             
@@ -113,23 +118,22 @@ if opcion == "📊 Métricas Generales":
             st.metric("🏆 Beneficio total estimado (basado en ventas)", f"{beneficio_total_platos:,.2f} €")
             st.metric("📊 Margen medio ponderado (por ventas)", f"{margen_ponderado:.1f} %")
         else:
-            st.warning(f"El archivo {FILE_RENTABILIDAD} no tiene las columnas esperadas.")
+            st.warning("La pestaña 'Rentabilidad' en Google Sheets no tiene las columnas esperadas.")
             st.dataframe(df_rent)
     else:
-        st.info(f"Aún no se ha calculado la rentabilidad de ningún plato. Ve a la sección '💰 Rentabilidad y Costos'.")
+        st.info("Aún no se ha calculado la rentabilidad de ningún plato. Ve a la sección '💰 Rentabilidad y Costos'.")
 
 
-# === 2️⃣ CALCULADORA DE RENTABILIDAD (Mejorada) ===
+# === 2️⃣ CALCULADORA DE RENTABILIDAD ===
 elif opcion == "💰 Rentabilidad y Costos":
     st.title("💰 Gestión de Costos y Rentabilidad")
     st.info("Sigue los pasos: 1. Añade ingredientes a tu biblioteca. 2. Define la receta de un plato y calcula su rentabilidad.")
 
-    # --- PARTE 1: BIBLIOTECA DE INGREDIENTES ---
     st.markdown("---")
     st.subheader("1. 📚 Biblioteca de Ingredientes")
-    st.caption("Añade aquí los ingredientes que compras y su precio.")
-
-    df_biblioteca = load_data(FILE_BIBLIOTECA) # <-- Usa la función simple de Excel
+    
+    # Usamos el dataframe ya cargado
+    df_bib = df_biblioteca
 
     with st.form("form_ingrediente"):
         col1, col2, col3 = st.columns(3)
@@ -146,28 +150,26 @@ elif opcion == "💰 Rentabilidad y Costos":
                 "Precio (€)": precio_ing
             }])
             
-            if not df_biblioteca.empty:
-                df_biblioteca = df_biblioteca[df_biblioteca["Nombre"] != nombre_ing.strip().title()]
+            if not df_bib.empty:
+                # Actualiza si existe, o añade si es nuevo
+                df_bib = df_bib[df_bib["Nombre"] != nombre_ing.strip().title()]
             
-            df_biblioteca = pd.concat([df_biblioteca, nuevo_ing], ignore_index=True)
+            df_bib_final = pd.concat([df_bib, nuevo_ing], ignore_index=True)
             
-            try:
-                df_biblioteca.to_excel(FILE_BIBLIOTECA, index=False)
-                st.success(f"¡Ingrediente '{nombre_ing}' guardado en la biblioteca!")
-            except Exception as e:
-                st.error(f"No se pudo guardar la biblioteca: {e}")
+            # ¡Guardamos en Google Sheets!
+            if save_to_sheet(df_bib_final, "Biblioteca"):
+                st.success(f"¡Ingrediente '{nombre_ing}' guardado en la nube!")
+                st.experimental_rerun() # Recarga la app para mostrar el nuevo ingrediente
 
-    if not df_biblioteca.empty:
-        st.dataframe(df_biblioteca.sort_values("Nombre"), use_container_width=True)
+    if not df_bib.empty:
+        st.dataframe(df_bib.sort_values("Nombre"), use_container_width=True)
     else:
         st.info("Tu biblioteca de ingredientes está vacía. Añade uno para empezar.")
 
-
-    # --- PARTE 2: DEFINIR RECETA Y CALCULAR RENTABILIDAD ---
     st.markdown("---")
     st.subheader("2. 🍳 Definir Receta y Calcular Rentabilidad")
     
-    if df_biblioteca.empty:
+    if df_bib.empty:
         st.warning("Debes añadir al menos un ingrediente a tu biblioteca (arriba) para poder definir una receta.")
     else:
         if 'Categoría' in df_ventas.columns:
@@ -186,7 +188,7 @@ elif opcion == "💰 Rentabilidad y Costos":
             ingredientes_receta = []
             costo_total_plato = 0.0
             
-            opciones_biblioteca = sorted(df_biblioteca["Nombre"].tolist())
+            opciones_biblioteca = sorted(df_bib["Nombre"].tolist())
 
             for i in range(int(num_ing_receta)):
                 st.markdown(f"**Ingrediente #{i+1}**")
@@ -199,7 +201,7 @@ elif opcion == "💰 Rentabilidad y Costos":
                 )
                 
                 if nombre_ing_receta:
-                    ing_data = df_biblioteca[df_biblioteca["Nombre"] == nombre_ing_receta].iloc[0]
+                    ing_data = df_bib[df_bib["Nombre"] == nombre_ing_receta].iloc[0]
                     unidad_data = ing_data["Unidad"]
                     precio_data = ing_data["Precio (€)"]
 
@@ -234,58 +236,43 @@ elif opcion == "💰 Rentabilidad y Costos":
                         "Margen (%)": margen
                     }])
 
-                    df_rent_existente = load_data(FILE_RENTABILIDAD) # <-- Usa la función simple de Excel
+                    df_rent_existente = df_rentabilidad
                     
                     if not df_rent_existente.empty:
                         df_rent_existente = df_rent_existente[df_rent_existente["Plato"] != plato]
                     
                     df_rent_final = pd.concat([df_rent_existente, registro], ignore_index=True)
                     
-                    try:
-                        df_rent_final.to_excel(FILE_RENTABILIDAD, index=False)
-                        st.info(f"💾 Rentabilidad de '{plato}' guardada correctamente en `{FILE_RENTABILIDAD}`")
+                    # ¡Guardamos en Google Sheets!
+                    if save_to_sheet(df_rent_final, "Rentabilidad"):
+                        st.info(f"💾 Rentabilidad de '{plato}' guardada en la nube.")
                         st.dataframe(df_rent_final.sort_values("Plato").tail(5), use_container_width=True)
-                    except Exception as e:
-                        st.error(f"No se pudo guardar el archivo de rentabilidad: {e}")
                 else:
-                    st.error("El costo total es 0. Asegúrate de añadir ingredientes y sus cantidades.")
+                    st.error("El costo total es 0. Asegúrate de añadir ingredientes y cantidades.")
 
 
-# === 3️⃣ ANÁLISIS DE INGENIERÍA DE MENÚ (NUEVO) ===
+# === 3️⃣ ANÁLISIS DE INGENIERÍA DE MENÚ ===
 elif opcion == "📈 Análisis de Menú":
     st.title("📈 Análisis de Ingeniería de Menú")
-    st.info("""
-    Este análisis clasifica tus platos en cuatro categorías para ayudarte a tomar decisiones estratégicas:
-    - **⭐ Estrellas:** Alta popularidad y alta rentabilidad. ¡Tus ganadores!
-    - **🧩 Puzzles:** Baja popularidad pero alta rentabilidad. ¿Cómo venderlos más?
-    - **🐄 Vacas Lecheras (Cash Cows):** Alta popularidad pero baja rentabilidad. ¿Puedes reducir su costo?
-    - **🐶 Perros (Dogs):** Baja popularidad y baja rentabilidad. Considera eliminarlos.
-    """)
-
-    # 1. Cargar datos de rentabilidad
-    df_rent = load_data(FILE_RENTABILIDAD) # <-- Usa la función simple de Excel
+    
+    df_rent = df_rentabilidad
     
     if df_rent.empty or "Plato" not in df_rent.columns or "Margen (%)" not in df_rent.columns:
-        st.warning(f"No se encontró el archivo `{FILE_RENTABILIDAD}` o no tiene las columnas 'Plato' y 'Margen (%)'.")
-        st.info("Por favor, calcula la rentabilidad de al menos dos platos en la sección '💰 Rentabilidad y Costos' para continuar.")
+        st.warning("Aún no hay datos suficientes de rentabilidad en Google Sheets.")
         st.stop()
 
-    # 2. Cargar datos de popularidad (ventas)
     df_pop = df_ventas.groupby("Producto")["Cantidad"].sum().reset_index()
     df_pop.columns = ["Plato", "Popularidad"]
 
-    # 3. Unir los datos
     df_menu = pd.merge(df_pop, df_rent[["Plato", "Margen (%)"]], on="Plato", how="inner")
 
     if len(df_menu) < 2:
-        st.warning("Se necesitan datos de ventas y rentabilidad para al menos dos platos coincidentes para realizar el análisis.")
+        st.warning("Calcula la rentabilidad de al menos dos platos para ver el gráfico de matriz.")
         st.stop()
 
-    # 4. Calcular los promedios para definir los cuadrantes
     avg_pop = df_menu["Popularidad"].mean()
     avg_margen = df_menu["Margen (%)"].mean()
 
-    # 5. Clasificar cada plato
     def classify_dish(row, avg_pop, avg_margen):
         if row["Popularidad"] >= avg_pop and row["Margen (%)"] >= avg_margen:
             return "⭐ Estrella (Star)"
@@ -298,83 +285,41 @@ elif opcion == "📈 Análisis de Menú":
 
     df_menu["Clasificación"] = df_menu.apply(lambda row: classify_dish(row, avg_pop, avg_margen), axis=1)
 
-    # 6. Crear el Gráfico de Dispersión (Scatter Plot)
     st.subheader("📊 Matriz de Análisis de Menú")
-    
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    colors = {
-        "⭐ Estrella (Star)": "green",
-        "🧩 Puzzle": "orange",
-        "🐄 Vaca Lechera (Cash Cow)": "blue",
-        "🐶 Perro (Dog)": "red"
-    }
+    colors = {"⭐ Estrella (Star)": "green", "🧩 Puzzle": "orange", "🐄 Vaca Lechera (Cash Cow)": "blue", "🐶 Perro (Dog)": "red"}
+    
+    # Fijar el color del texto a blanco para que se lea en el modo oscuro
+    plt.rcParams['text.color'] = 'white'
+    plt.rcParams['axes.labelcolor'] = 'white'
+    plt.rcParams['xtick.color'] = 'white'
+    plt.rcParams['ytick.color'] = 'white'
+    fig.patch.set_facecolor('#1E2329') # Fondo acorde al modo oscuro
+    ax.set_facecolor('#1E2329')
 
-    # Dibujar los puntos
     for cat, color in colors.items():
         subset = df_menu[df_menu["Clasificación"] == cat]
         ax.scatter(subset["Popularidad"], subset["Margen (%)"], label=cat, color=color, s=120, alpha=0.7)
 
-    # Añadir líneas de promedio
     ax.axhline(avg_margen, color='grey', linestyle='--')
     ax.axvline(avg_pop, color='grey', linestyle='--')
 
-    # Añadir etiquetas a los puntos
     for i, row in df_menu.iterrows():
-        ax.text(row["Popularidad"] + 0.5, row["Margen (%)"] + 0.5, row["Plato"], fontsize=9)
-
-    # Añadir etiquetas de los cuadrantes
-    ax.text(avg_pop * 1.01, avg_margen * 1.01, 'Estrellas', fontsize=12, color='green', weight='bold')
-    ax.text(avg_pop * 0.99, avg_margen * 1.01, 'Puzzles', fontsize=12, color='orange', ha='right', weight='bold')
-    ax.text(avg_pop * 1.01, avg_margen * 0.99, 'Vacas Lecheras', fontsize=12, color='blue', va='top', weight='bold')
-    ax.text(avg_pop * 0.99, avg_margen * 0.99, 'Perros', fontsize=12, color='red', ha='right', va='top', weight='bold')
+        ax.text(row["Popularidad"] + 0.5, row["Margen (%)"] + 0.5, row["Plato"], fontsize=9, color='white')
 
     ax.set_xlabel("Popularidad (Cantidad Vendida)")
     ax.set_ylabel("Rentabilidad (Margen %)")
-    ax.set_title("Análisis de Ingeniería de Menú")
     ax.legend()
-    ax.grid(True, linestyle=':', alpha=0.6)
-
     st.pyplot(fig)
 
-    # 7. Mostrar Recomendaciones Accionables
-    st.subheader("💡 Recomendaciones Accionables")
-    
-    for cat in colors.keys():
-        st.markdown(f"---")
-        st.markdown(f"### {cat}")
-        
-        platos_en_cat = df_menu[df_menu["Clasificación"] == cat]["Plato"].tolist()
-        
-        if not platos_en_cat:
-            st.write("No hay platos en esta categoría.")
-            continue
 
-        st.write(f"**Platos:** {', '.join(platos_en_cat)}")
-        
-        if cat == "⭐ Estrella (Star)":
-            st.success("**Acción:** ¡Sigue así! Mantén la calidad y dales visibilidad en el menú. Son tus productos ganadores.")
-        elif cat == "🧩 Puzzle":
-            st.warning("**Acción:** Tienen buen margen pero no se venden. Prueba a mejorar su descripción, cambiar su nombre, poner una foto en el menú o que los camareros los recomienden activamente.")
-        elif cat == "🐄 Vaca Lechera (Cash Cow)":
-            st.info("**Acción:** Son muy populares pero poco rentables. Revisa sus costos en la 'Biblioteca de Ingredientes' para ver si puedes reducirlos o considera un ligero aumento de precio que no afecte la demanda.")
-        elif cat == "🐶 Perro (Dog)":
-            st.error("**Acción:** Tienen baja popularidad y baja rentabilidad. Ocupan espacio y esfuerzo. Considera simplificar la receta para bajar costos drásticamente o eliminarlos del menú.")
-
-    st.markdown("---")
-    st.subheader("Datos del Análisis")
-    st.dataframe(df_menu.set_index("Plato"), use_container_width=True)
-
-
-# === 4️⃣ PREDICCIÓN DE DEMANDA (Mejorada) ===
+# === 4️⃣ PREDICCIÓN DE DEMANDA ===
 elif opcion == "🤖 Predicción de Demanda":
     st.title("🤖 Predicción de Demanda (Próximos 7 días)")
-    st.caption("Predicción basada en el modelo Prophet con estacionalidad diaria y semanal, usando datos históricos de ventas.")
-
-    # --- PREDICCIÓN DE CANTIDAD (CLIENTELA/DEMANDA) ---
+    
     st.subheader("👥 Predicción de Platos Vendidos (Demanda)")
     
-    # Agrupar ventas por día (cantidad total de platos)
     ventas_diarias_cant = df_ventas.groupby(df_ventas['Fecha'].dt.date)["Cantidad"].sum().reset_index()
     ventas_diarias_cant["Fecha"] = pd.to_datetime(ventas_diarias_cant["Fecha"])
     ventas_diarias_cant = ventas_diarias_cant.sort_values("Fecha")
@@ -394,48 +339,11 @@ elif opcion == "🤖 Predicción de Demanda":
         df_pred_cant["Fecha"] = df_pred_cant["Fecha"].dt.date
         
         st.dataframe(df_pred_cant.set_index("Fecha"), use_container_width=True)
-
-        fig_cant, ax_cant = plt.subplots(figsize=(10, 5))
-        m_cant.plot(forecast_cant, ax=ax_cant, xlabel="Fecha", ylabel="Platos Vendidos")
-        ax_cant.set_title("Predicción de Platos Vendidos (7 días)")
+        
+        fig_cant = m_cant.plot(forecast_cant, xlabel="Fecha", ylabel="Platos Vendidos")
         st.pyplot(fig_cant)
 
         promedio_esperado_cant = df_pred_cant["Predicción Platos"].mean()
         st.metric("📈 Promedio esperado diario (platos)", f"{int(promedio_esperado_cant)} platos/día")
     else:
-        st.warning("No hay suficientes datos históricos (se necesitan > 2 días) para predecir la cantidad de platos.")
-
-
-    # --- PREDICCIÓN DE VENTAS (€) ---
-    st.markdown("---")
-    st.subheader("💸 Predicción de Ventas (€)")
-
-    ventas_diarias_eur = df_ventas.groupby(df_ventas['Fecha'].dt.date)["Total Venta (€)"].sum().reset_index()
-    ventas_diarias_eur["Fecha"] = pd.to_datetime(ventas_diarias_eur["Fecha"])
-    ventas_diarias_eur = ventas_diarias_eur.sort_values("Fecha")
-
-    if len(ventas_diarias_eur) > 2:
-        df_prophet_eur = ventas_diarias_eur.rename(columns={"Fecha": "ds", "Total Venta (€)": "y"})
-        
-        m_eur = Prophet(daily_seasonality=True, weekly_seasonality=True)
-        m_eur.fit(df_prophet_eur)
-
-        future_eur = m_eur.make_future_dataframe(periods=7, freq='D')
-        forecast_eur = m_eur.predict(future_eur)
-
-        df_pred_eur = forecast_eur[forecast_eur["ds"] > df_prophet_eur["ds"].max()][["ds", "yhat", "yhat_lower", "yhat_upper"]]
-        df_pred_eur = df_pred_eur.rename(columns={"ds": "Fecha", "yhat": "Predicción Ventas (€)"})
-        df_pred_eur["Predicción Ventas (€)"] = df_pred_eur["Predicción Ventas (€)"].apply(lambda x: max(round(x, 2), 0))
-        df_pred_eur["Fecha"] = df_pred_eur["Fecha"].dt.date
-        
-        st.dataframe(df_pred_eur.set_index("Fecha"), use_container_width=True)
-
-        fig_eur, ax_eur = plt.subplots(figsize=(10, 5))
-        m_eur.plot(forecast_eur, ax=ax_eur, xlabel="Fecha", ylabel="Ventas (€)")
-        ax_eur.set_title("Predicción de Ventas (€) (7 días)")
-        st.pyplot(fig_eur)
-
-        promedio_esperado_eur = df_pred_eur["Predicción Ventas (€)"].mean()
-        st.metric("📈 Promedio esperado diario (ventas)", f"{promedio_esperado_eur:,.2f} €/día")
-    else:
-        st.warning("No hay suficientes datos históricos (se necesitan > 2 días) para predecir las ventas.")
+        st.warning("No hay suficientes datos históricos en la hoja de Google Sheets (se necesitan > 2 días).")

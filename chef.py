@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from prophet import Prophet
-# Importamos la conexión oficial de Streamlit a Google Sheets
 from streamlit_gsheets import GSheetsConnection
 
 # === CONFIGURACIÓN DE LA PÁGINA ===
@@ -13,22 +12,51 @@ st.set_page_config(
     layout="wide"
 )
 
-# === URL DE TU GOOGLE SHEET (¡Cámbiala por la tuya!) ===
-SHEET_URL = "https://docs.google.com/spreadsheets/d/1sKwhKO46r6ZRUO70GB8afjY_YYvQH7VzES4bCN3AhEY/edit?gid=1651162993#gid=1651162993"
+# === SISTEMA DE LOGIN ===
+def check_password():
+    """Devuelve True si el usuario ha introducido la contraseña correcta."""
+    def password_entered():
+        usuario = st.session_state["usuario_input"]
+        password = st.session_state["password_input"]
+        
+        # Comprueba si el usuario existe en los secretos y la contraseña coincide
+        if usuario in st.secrets.get("passwords", {}) and password == st.secrets["passwords"][usuario]:
+            st.session_state["autenticado"] = True
+            st.session_state["usuario_actual"] = usuario
+            del st.session_state["password_input"]  # Por seguridad, borramos la contraseña de la memoria
+        else:
+            st.session_state["autenticado"] = False
 
-# Crear la conexión global a Google Sheets
-# Se conecta usando los "Secrets" que configuraste en Streamlit Cloud
+    if not st.session_state.get("autenticado", False):
+        # Pantalla de inicio de sesión (centrada)
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            st.title("🔒 Acceso Chef.AI")
+            st.info("Introduce tus credenciales para acceder al panel de tu restaurante.")
+            st.text_input("Usuario", key="usuario_input")
+            st.text_input("Contraseña", type="password", key="password_input")
+            st.button("Iniciar Sesión", on_click=password_entered)
+            
+            if "autenticado" in st.session_state and not st.session_state["autenticado"]:
+                st.error("😕 Usuario o contraseña incorrectos")
+        return False
+    return True
+
+# Si la contraseña no es correcta, detenemos el código aquí
+if not check_password():
+    st.stop()
+
+
+# === A PARTIR DE AQUÍ, EL CÓDIGO SOLO SE EJECUTA SI ESTÁ LOGUEADO ===
+
+# URL DE TU GOOGLE SHEET (¡Cámbiala por la tuya!)
+SHEET_URL = "https://docs.google.com/spreadsheets/d/TU_ID_DE_GOOGLE_SHEETS_AQUI/edit"
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-
-# === NUEVAS FUNCIONES PARA CARGAR DATOS DESDE GOOGLE SHEETS ===
-
-@st.cache_data(ttl=600) # Cachea los datos por 10 minutos para no saturar a Google
+@st.cache_data(ttl=600)
 def load_sheet_data(worksheet_name):
-    """Carga una pestaña específica del Google Sheet y devuelve un DataFrame"""
     try:
         df = conn.read(spreadsheet=SHEET_URL, worksheet=worksheet_name)
-        # Limpiar filas completamente vacías
         df = df.dropna(how='all')
         return df
     except Exception as e:
@@ -36,35 +64,38 @@ def load_sheet_data(worksheet_name):
         return pd.DataFrame()
 
 def save_to_sheet(df, worksheet_name):
-    """Sobreescribe una pestaña específica del Google Sheet con el DataFrame nuevo"""
     try:
-        # Primero leemos para asegurarnos de que no perdemos estructura, luego limpiamos y guardamos
         conn.update(worksheet=worksheet_name, data=df, spreadsheet=SHEET_URL)
-        # Limpiamos el caché para que la app lea los datos frescos en el próximo click
         st.cache_data.clear() 
         return True
     except Exception as e:
         st.error(f"Error al guardar en la pestaña '{worksheet_name}': {e}")
         return False
 
-# === CARGAR DATOS PRINCIPALES ===
-# Cargamos desde las pestañas (asegúrate de que los nombres coinciden en tu Google Sheet)
+# Cargar datos
 df_ventas = load_sheet_data("Ventas")
 df_rentabilidad = load_sheet_data("Rentabilidad")
 df_biblioteca = load_sheet_data("Biblioteca")
 
-# Preprocesamiento de Ventas (si hay datos)
 if not df_ventas.empty and 'Fecha' in df_ventas.columns:
     df_ventas['Fecha'] = pd.to_datetime(df_ventas['Fecha'], errors='coerce')
     df_ventas = df_ventas.dropna(subset=['Fecha'])
 
 if df_ventas.empty:
-    st.warning("⚠️ No hay datos en la pestaña 'Ventas' de Google Sheets. Añade algunos datos para poder ver el dashboard.")
+    st.warning("⚠️ No hay datos en la pestaña 'Ventas' de Google Sheets.")
     st.stop()
-
 
 # === MENÚ LATERAL ===
 st.sidebar.title("🍴 Chef.AI Panel")
+st.sidebar.markdown(f"**Usuario:** `{st.session_state['usuario_actual']}`")
+
+# Botón de cerrar sesión
+if st.sidebar.button("🚪 Cerrar Sesión"):
+    st.session_state["autenticado"] = False
+    st.rerun()
+
+st.sidebar.markdown("---")
+
 opcion = st.sidebar.radio(
     "Selecciona una vista:",
     (
@@ -97,7 +128,6 @@ if opcion == "📊 Métricas Generales":
     st.markdown("---")
     st.subheader("💰 Resumen de Rentabilidad por Plato")
 
-    # Usamos el dataframe que ya cargamos desde Google Sheets al principio
     df_rent = df_rentabilidad
 
     if not df_rent.empty:
@@ -132,7 +162,6 @@ elif opcion == "💰 Rentabilidad y Costos":
     st.markdown("---")
     st.subheader("1. 📚 Biblioteca de Ingredientes")
     
-    # Usamos el dataframe ya cargado
     df_bib = df_biblioteca
 
     with st.form("form_ingrediente"):
@@ -151,15 +180,13 @@ elif opcion == "💰 Rentabilidad y Costos":
             }])
             
             if not df_bib.empty:
-                # Actualiza si existe, o añade si es nuevo
                 df_bib = df_bib[df_bib["Nombre"] != nombre_ing.strip().title()]
             
             df_bib_final = pd.concat([df_bib, nuevo_ing], ignore_index=True)
             
-            # ¡Guardamos en Google Sheets!
             if save_to_sheet(df_bib_final, "Biblioteca"):
                 st.success(f"¡Ingrediente '{nombre_ing}' guardado en la nube!")
-                st.experimental_rerun() # Recarga la app para mostrar el nuevo ingrediente
+                st.rerun() 
 
     if not df_bib.empty:
         st.dataframe(df_bib.sort_values("Nombre"), use_container_width=True)
@@ -243,7 +270,6 @@ elif opcion == "💰 Rentabilidad y Costos":
                     
                     df_rent_final = pd.concat([df_rent_existente, registro], ignore_index=True)
                     
-                    # ¡Guardamos en Google Sheets!
                     if save_to_sheet(df_rent_final, "Rentabilidad"):
                         st.info(f"💾 Rentabilidad de '{plato}' guardada en la nube.")
                         st.dataframe(df_rent_final.sort_values("Plato").tail(5), use_container_width=True)
@@ -290,12 +316,11 @@ elif opcion == "📈 Análisis de Menú":
 
     colors = {"⭐ Estrella (Star)": "green", "🧩 Puzzle": "orange", "🐄 Vaca Lechera (Cash Cow)": "blue", "🐶 Perro (Dog)": "red"}
     
-    # Fijar el color del texto a blanco para que se lea en el modo oscuro
     plt.rcParams['text.color'] = 'white'
     plt.rcParams['axes.labelcolor'] = 'white'
     plt.rcParams['xtick.color'] = 'white'
     plt.rcParams['ytick.color'] = 'white'
-    fig.patch.set_facecolor('#1E2329') # Fondo acorde al modo oscuro
+    fig.patch.set_facecolor('#1E2329') 
     ax.set_facecolor('#1E2329')
 
     for cat, color in colors.items():

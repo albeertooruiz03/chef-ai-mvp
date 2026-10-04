@@ -15,38 +15,40 @@ st.set_page_config(
 # === SISTEMA DE LOGIN ===
 def check_password():
     """Devuelve True si el usuario ha introducido la contraseña correcta."""
-    def password_entered():
-        # Usar .get() evita el KeyError si la memoria se ha limpiado
-        usuario = st.session_state.get("usuario_input", "")
-        password = st.session_state.get("password_input", "")
-        
-        # Comprueba si el usuario existe en los secretos y la contraseña coincide
-        if usuario in st.secrets.get("passwords", {}) and password == st.secrets["passwords"][usuario]:
-            st.session_state["autenticado"] = True
-            st.session_state["usuario_actual"] = usuario
-            
-            # Limpiamos las casillas por seguridad comprobando primero si existen
-            if "password_input" in st.session_state:
-                del st.session_state["password_input"]
-            if "usuario_input" in st.session_state:
-                del st.session_state["usuario_input"]
-        else:
-            st.session_state["autenticado"] = False
+    # Si ya está logueado, le dejamos pasar directamente
+    if st.session_state.get("autenticado", False):
+        return True
 
-    if not st.session_state.get("autenticado", False):
-        # Pantalla de inicio de sesión (centrada)
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.title("🔒 Acceso Chef.AI")
-            st.info("Introduce tus credenciales para acceder al panel de tu restaurante.")
-            st.text_input("Usuario", key="usuario_input")
-            st.text_input("Contraseña", type="password", key="password_input")
-            st.button("Iniciar Sesión", on_click=password_entered)
+    # Pantalla de inicio de sesión (centrada)
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        st.title("🔒 Acceso Chef.AI")
+        st.info("Introduce tus credenciales para acceder al panel de tu restaurante.")
+        
+        # Usamos un formulario (st.form) que es mucho más estable
+        with st.form("login_form"):
+            usuario = st.text_input("Usuario")
+            password = st.text_input("Contraseña", type="password")
+            submit = st.form_submit_button("Iniciar Sesión")
             
-            if "autenticado" in st.session_state and not st.session_state["autenticado"]:
-                st.error("😕 Usuario o contraseña incorrectos")
-        return False
-    return True
+            if submit:
+                # 1. Comprobamos si la sección [passwords] existe realmente en la nube
+                if "passwords" in st.secrets:
+                    # 2. Comprobamos si el usuario existe y la clave coincide
+                    if usuario in st.secrets["passwords"] and password == st.secrets["passwords"][usuario]:
+                        st.session_state["autenticado"] = True
+                        st.session_state["usuario_actual"] = usuario
+                        st.rerun() # Recarga la página para mostrar el dashboard
+                    else:
+                        st.error("😕 Usuario o contraseña incorrectos")
+                else:
+                    st.error("⚠️️ Error técnico: No se ha encontrado la sección [passwords] en los 'Secrets' de Streamlit Cloud. Revisa la configuración.")
+                    
+    return False
+
+# Si la contraseña no es correcta, detenemos el código aquí
+if not check_password():
+    st.stop()
 
 # Si la contraseña no es correcta, detenemos el código aquí
 if not check_password():

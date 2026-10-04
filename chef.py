@@ -14,7 +14,7 @@ st.set_page_config(
 )
 
 # === URL DE TU GOOGLE SHEET (¡Cámbiala por la tuya!) ===
-SHEET_URL = "https://docs.google.com/spreadsheets/d/TU_ID_DE_GOOGLE_SHEETS_AQUI/edit"
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1sKwhKO46r6ZRUO70GB8afjY_YYvQH7VzES4bCN3AhEY/edit?gid=1651162993#gid=1651162993"
 
 # Crear la conexión global a Google Sheets
 # Se conecta usando los "Secrets" que configuraste en Streamlit Cloud

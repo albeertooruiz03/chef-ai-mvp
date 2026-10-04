@@ -58,7 +58,7 @@ if not check_password():
 # === A PARTIR DE AQUÍ, EL CÓDIGO SOLO SE EJECUTA SI ESTÁ LOGUEADO ===
 
 # URL DE TU GOOGLE SHEET (¡Cámbiala por la tuya!)
-SHEET_URL = "https://docs.google.com/spreadsheets/d/TU_ID_DE_GOOGLE_SHEETS_AQUI/edit"
+SHEET_URL = "https://docs.google.com/spreadsheets/d/1sKwhKO46r6ZRUO70GB8afjY_YYvQH7VzES4bCN3AhEY/edit?gid=0#gid=0"
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 @st.cache_data(ttl=600)
